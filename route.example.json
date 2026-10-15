@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "network": {
+    "first_hop": {
+      "server": "198.51.100.10",
+      "port": 8443,
+      "password": "REPLACE_FIRST_HOP_PASSWORD",
+      "sni": "first-hop.example.com",
+      "skip_cert_verify": true
+    },
+    "exit_hop": {
+      "server": "203.0.113.20",
+      "port": 443,
+      "password": "REPLACE_EXIT_HOP_PASSWORD",
+      "sni": "exit-hop.example.com",
+      "skip_cert_verify": true
+    },
+    "expected_exit_ip": "203.0.113.20"
+  },
+  "wireguard": {
+    "client_private_key": "REPLACE_WIREGUARD_PRIVATE_KEY",
+    "server_public_key": "REPLACE_WIREGUARD_SERVER_PUBLIC_KEY"
+  }
+}

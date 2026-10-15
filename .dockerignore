@@ -1,0 +1,8 @@
+**
+!gateway/
+!gateway/Dockerfile
+!gateway/controller.py
+!gateway/packet.py
+!gateway/stream.py
+!vm/
+!vm/route_contract.py

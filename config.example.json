@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "vm": {
+    "username": "debian",
+    "hostname": "lemonbox",
+    "timezone": "America/Los_Angeles",
+    "cpus": 2,
+    "memory_mib": 4096,
+    "disk_gib": 24,
+    "desktop": true,
+    "docker": true
+  },
+  "desktop": {
+    "port": 5901
+  },
+  "shares": []
+}

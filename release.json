@@ -1,0 +1,17 @@
+{
+  "version": "0.1.0",
+  "runtime_base": "docker.io/library/debian@sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483",
+  "apt_snapshot": "20261012T000000Z",
+  "guest_image_url": "https://cloud.debian.org/images/cloud/trixie/20261001-2618/debian-13-generic-amd64-20261001-2618.qcow2",
+  "guest_image_sha512": "6f0f93335bdef4ccf523c4317cc663ea52ca23b862667785f3d6d186ab4674a937385ccff0c55996b4b2e4c19e440cdf211e2a75ffa2f6548037ab43950c841d",
+  "claude_version": "2.1.296",
+  "claude_binary_url": "https://downloads.claude.ai/claude-code-releases/2.1.296/linux-x64/claude",
+  "claude_binary_sha256": "24972e3bc859fab2b46ed4c1e51f7d6130f06d3bd550811a114640de3370d0de",
+  "claude_binary_size": 257068216,
+  "claude_manifest_url": "https://downloads.claude.ai/claude-code-releases/2.1.296/manifest.json",
+  "mihomo_version": "1.19.25",
+  "mihomo_archive_url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.25/mihomo-linux-amd64-compatible-v1.19.25.gz",
+  "mihomo_archive_sha256": "8d14bf2edbf2911db004abaed12754d63041eaf87e565af6f1e589883cd93ec8",
+  "machine_type": "pc-q35-10.0",
+  "routing": "wireguard-framed-hysteria2"
+}

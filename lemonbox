@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Start Lemonbox and use Claude, the desktop and shared projects."""
+from vm.cli import main
+
+if __name__ == '__main__':
+    raise SystemExit(main())
