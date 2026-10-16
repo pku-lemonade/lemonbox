@@ -19,7 +19,7 @@ This creates `/usr/local/bin/lemonbox` as a link to this checkout; `/usr/local/b
 
 Choose **Create a VM**. The guide asks for your username, hostname, timezone, CPU, memory, disk and optional desktop/Docker. Saved VM templates can supply defaults. Configure the shared route once using your Hysteria chain and the keys matching your already prepared external WireGuard gateway. Passwords and private keys use hidden input.
 
-Setup checks the fixed route before allowing guest Internet access. First boot with the desktop and Docker downloads roughly 650 MB of guest software; timing depends on your connection. Sign in to Claude using your own account.
+The gateway verifies the fixed route before allowing guest Internet access. First boot with the desktop and Docker downloads roughly 650 MB of guest software; timing depends on your connection. Sign in to Claude using your own account.
 
 ```bash
 lemonbox claude
@@ -41,7 +41,7 @@ Each new VM gets `~/workspace`, backed by `workspaces/<vm-name>/` inside the Lem
 
 Select or create a VM in the menu. Each VM has its own disk, account, SSH identity, private IPv4 and relay port. They can run concurrently through the same gateway and public exit. `lemonbox stop` and `restart` affect only the selected VM; `lemonbox stop --all` also stops the shared gateway.
 
-Use `lemonbox settings` for VM settings or the shared route. Shared route changes, recovery and runtime updates require all VMs stopped. Templates contain VM settings only; credentials are stored once in the shared gateway directory.
+Use `lemonbox settings` for VM settings or the shared route. Shared route changes, manual gateway replacement and runtime updates require all VMs stopped. Automatic tunnel recovery preserves running VMs. Templates contain VM settings only; credentials are stored once in the shared gateway directory.
 
 ## Join a shared VM
 
@@ -66,7 +66,9 @@ For someone on another computer, choose **Remote access** instead. That flow exc
 
 ## Routing and support
 
-IPv4 TCP, UDP and ICMP use the shared fixed packet tunnel. IPv6, host and LAN destinations are blocked. A failed route closes Internet access for all attached VMs until explicit recovery; it never falls back to another connection.
+IPv4 TCP, UDP and ICMP use the shared fixed packet tunnel. IPv6, host and LAN destinations are blocked. A failed route closes Internet access for all attached VMs while the gateway repairs the same tunnel. It verifies the configured public exit before reopening traffic and preserves running VM sessions. It never selects another route.
+
+The gateway continuously verifies the route, repairs transient failures and publishes recovery state and alerts. `lemonbox status` and other local Lemonbox commands display that reported state when invoked. Missing or stale reports appear as status unavailable. An unexpected exit, invalid configuration or explicit operator block stays closed for inspection. See [recovery and alerts](docs/troubleshooting.md#internet-is-closed).
 
 This is an observable Linux VM. Virtualization and routing do not guarantee how a service classifies it.
 

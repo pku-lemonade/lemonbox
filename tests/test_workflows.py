@@ -86,7 +86,7 @@ class WorkflowTests(unittest.TestCase):
         self.vm.health.side_effect = [True, False]
         with patch.object(self.workflow, 'remote', return_value=incomplete) as remote, \
                 patch('vm.workflows.time.sleep') as sleep, contextlib.redirect_stderr(io.StringIO()), \
-                self.assertRaisesRegex(RuntimeError, 'fixed route is closed.*shell remains available'):
+                self.assertRaisesRegex(RuntimeError, 'not reporting a ready fixed route.*shell remains available'):
             self.workflow.ready(timeout=900)
         self.assertEqual(remote.call_count, 2)
         self.assertEqual(sleep.call_count, 1)
@@ -95,7 +95,7 @@ class WorkflowTests(unittest.TestCase):
         self.vm.health.return_value = False
         with patch.object(self.workflow, 'remote', return_value=subprocess.CompletedProcess([], 255, '', 'SSH unavailable')), \
                 patch('vm.workflows.time.sleep') as sleep, \
-                self.assertRaisesRegex(RuntimeError, 'fixed route is closed'):
+                self.assertRaisesRegex(RuntimeError, 'not reporting a ready fixed route'):
             self.workflow.ready(timeout=900)
         sleep.assert_not_called()
 

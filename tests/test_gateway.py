@@ -170,7 +170,7 @@ class GatewayTests(unittest.TestCase):
         with mock.patch.object(gateway, "write_state", side_effect=persisted), \
              mock.patch.object(gateway, "command", side_effect=executed) as command:
             gateway.block("fixture fault")
-        self.assertEqual(events, ["kernel", "state"])
+        self.assertEqual(events, ["kernel", "state", "state"])
         command.assert_called_once()
         payload = command.call_args.kwargs["input_text"]
         self.assertIn("flush set inet lemon_vm guest_ready", payload)

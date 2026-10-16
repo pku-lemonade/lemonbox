@@ -257,6 +257,31 @@ class PacketStartupTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "ip_forward must be configured as1"):
                 packet.setup_network(self.settings)
 
+    def test_recovery_reset_deletes_only_tunnel_and_exact_owned_policy_rules(self):
+        self.ready_socket()
+        links = json.dumps([{"ifname": "lo"}, {"ifname": "wg0"}, {"ifname": "vm0"}, {"ifname": "vm1"}])
+        with mock.patch.object(packet, "command", return_value=links) as run, \
+                mock.patch.object(packet.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as rules:
+            packet.reset_network(self.settings)
+        self.assertEqual(run.call_args_list, [mock.call(["ip", "-j", "link", "show"]),
+                                              mock.call(["ip", "link", "del", "dev", "wg0"])])
+        selectors = [call.args[0] for call in rules.call_args_list]
+        self.assertEqual(selectors, [
+            ["ip", "rule", "del", "priority", "177", "fwmark", "113", "lookup", "177"],
+            ["ip", "rule", "del", "priority", "178", "from", "10.78.0.2", "lookup", "177"]])
+        self.assertFalse((packet.WIREGUARD_STATE / "wg0.sock").exists())
+
+    def test_signal_during_wireguard_startup_reaps_child_promptly(self):
+        child = mock.Mock()
+        child.poll.return_value = None
+        stopping = mock.Mock()
+        stopping.is_set.return_value = True
+        with mock.patch.object(packet.subprocess, "Popen", return_value=child):
+            with self.assertRaisesRegex(OSError, "startup stopped"):
+                packet.start_wireguard(self.settings, stopping=stopping)
+        child.terminate.assert_called_once()
+        stopping.wait.assert_not_called()
+
     def test_failed_wg_command_does_not_expose_private_diagnostics(self):
         result = SimpleNamespace(returncode=1, stderr=self.settings.client_private_key, stdout="")
         with mock.patch.object(packet.subprocess, "run", return_value=result):

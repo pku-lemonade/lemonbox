@@ -83,6 +83,28 @@ class ConnectionTests(unittest.TestCase):
         vm.assert_not_called()
         workflow.claude.assert_called_once_with(['--version'])
 
+    def test_joined_status_displays_on_demand_gateway_alert(self):
+        alert = {'status': 'active', 'reason': 'The fixed route needs attention.'}
+        cli.select_connection('shared')
+        with patch.object(Connection, 'reachable', return_value=True), \
+                patch.object(cli, 'connection_alert', return_value=alert), \
+                patch('vm.gateway_runtime.run') as backend, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(cli.main(['status']), 0)
+        self.assertIn('ALERT: The fixed route needs attention.', output.getvalue())
+        backend.assert_not_called()
+
+    def test_joined_exec_warns_on_stderr_without_changing_native_exit(self):
+        cli.select_connection('shared')
+        workflow = MagicMock()
+        workflow.execute.return_value = 29
+        with patch('vm.connections.RemoteWorkflow', return_value=workflow), \
+                patch.object(cli, 'connection_alert', return_value={'status': 'active', 'reason': 'Gateway recovery needs attention.'}), \
+                contextlib.redirect_stderr(io.StringIO()) as output:
+            self.assertEqual(cli.main(['exec', '--', 'true']), 29)
+        self.assertIn('ALERT: Gateway recovery needs attention.', output.getvalue())
+        workflow.execute.assert_called_once_with(['true'])
+
     def test_joined_mode_hides_owner_help_and_rejects_controls(self):
         cli.select_connection('shared')
         with contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(SystemExit):

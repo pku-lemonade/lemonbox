@@ -14,6 +14,8 @@ test -r /dev/kvm && test -w /dev/kvm
 
 Enable hardware virtualization in firmware if necessary. Lemonbox does not switch to software emulation or invoke sudo to refresh your groups.
 
+Route health checks and automatic recovery run inside the shared gateway container, which publishes recovery state and alerts. `lemonbox status` and other local Lemonbox commands read and display that state when invoked. [Troubleshooting](troubleshooting.md#internet-is-closed) explains recovery progress and failure alerts.
+
 ## Prepare the shared assets
 
 The following URLs and checksums match [release.json](../release.json). When updating the release, use its new values. Download over verified HTTPS and verify the archive before unpacking it.

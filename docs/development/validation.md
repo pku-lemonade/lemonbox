@@ -37,6 +37,9 @@ The optional operator tools in `tests/` are:
 - `validate_packet.py`: six TCP/verified TLS/TTL/MTU/ICMP/UDP checks, with a 60-second guest budget and 80-second SSH limit. It does not download a speed-test payload.
 - `validate_adversarial.py`: guest-root spoofed, private/inter-VM, IPv6 and unsupported frames, verified against external drop counters.
 - `validate_faults.py`: one chosen local failure, existing/new TCP/UDP denial, actual empty lease gates and management SSH survival. The 35-second gate observation limit covers the real 30-second kernel lease.
+- `validate_recovery.py`: temporary stream/proxy/WireGuard loss, route removal or a 35-second controller pause. It verifies guest-gate closure, SSH survival, recovery on the same exit and an unchanged guest boot ID. The pause has an independent resume watchdog.
+
+Use `validate_recovery.py` for automatically repairable faults. `validate_faults.py --fault block` still verifies an explicit operator block; its long denial-sampling protocol is not appropriate for transient faults that can now recover while being sampled. A persistent failure must produce a gateway alert that `lemonbox status` and other local commands display from published state. Test alert display and clearing with published-state fixtures offline, including missing and stale metadata reporting status unavailable, or use one bounded existing-gateway incident and then restore it.
 
 Inspect each tool's help; pass the selected VM's pinned SSH configuration and allocated gateway address. Packet measurements require `--expected-exit-ip`; fault checks require `--first-hop-ip`. Read these values from your private route configuration; the tools have no deployment-specific defaults. There is no separate native guest wrapper: use `lemonbox diagnose`.
 

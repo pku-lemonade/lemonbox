@@ -90,7 +90,7 @@ class Workflow:
             if snapshot and snapshot.get("cloud_failed"):
                 raise RuntimeError("Guest provisioning failed; run lemonbox shell and inspect cloud-init status")
             if not self.vm.health():
-                raise RuntimeError("Gateway is unhealthy; the shared fixed route is closed. Recover it in lemonbox settings; lemonbox shell remains available")
+                raise RuntimeError("The gateway is not reporting a ready fixed route. Run lemonbox status for automatic recovery and alert details; lemonbox shell remains available")
             if snapshot:
                 last_state = "cloud-init " + str(snapshot.get("cloud_status", "unavailable"))
                 required = ("cloud_complete", "ssh_ready", "docker_ready", "claude_ready")

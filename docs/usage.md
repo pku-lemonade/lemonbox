@@ -9,7 +9,7 @@ Run `lemonbox` for the menu. It remembers your selected VM and offers setup when
 | `lemonbox desktop` | Start the desktop and open a localhost VNC connection |
 | `lemonbox files` | Add, remove or view shared host folders |
 | `lemonbox settings` | Edit, validate and apply settings |
-| `lemonbox status` | Show this VM and shared gateway health |
+| `lemonbox status` | Show this VM and the gateway's reported health, recovery progress and alerts |
 | `lemonbox access` | Connect someone to your VM, or remove their access |
 | `lemonbox join` | Connect to someone else's VM with your own SSH key |
 
@@ -157,7 +157,7 @@ lemonbox status --json
 lemonbox --help-all
 ```
 
-Templates contain VM settings only. The shared route credentials stay in one global configuration. Templates exclude guest identities and existing host shares; a new VM gets its own default workspace. Select or create another VM in the menu to reuse one. Shared route changes, recovery and runtime updates require all VMs stopped. Choose shared route recovery in `lemonbox settings` after `lemonbox stop --all`. For scripts, `--profile NAME` selects a VM explicitly; `--state-dir PATH` places its private state elsewhere.
+Templates contain VM settings only. The shared route credentials stay in one global configuration. Templates exclude guest identities and existing host shares; a new VM gets its own default workspace. Select or create another VM in the menu to reuse one. Shared route changes, manual gateway replacement and runtime updates require all VMs stopped. Automatic tunnel recovery keeps running VMs and verifies the fixed exit before restoring Internet access. `lemonbox status` displays the gateway's reported recovery progress and alerts; other local Lemonbox commands also display reported alerts when invoked. Missing or stale reports appear as status unavailable. For manual replacement, choose shared route recovery in `lemonbox settings` after `lemonbox stop --all`. For scripts, `--profile NAME` selects a VM explicitly; `--state-dir PATH` places its private state elsewhere.
 
 ## Access and joining
 

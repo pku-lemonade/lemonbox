@@ -17,6 +17,7 @@ from .onboarding import (
 from .runtime import ROOT, VM
 from .sharing import guest_mount_request
 from .workflows import READY_TIMEOUT, Workflow
+from .alerts import connection_alert, gateway_alert, route_alert
 
 
 PUBLIC_COMMANDS = ('claude', 'shell', 'desktop', 'files', 'settings', 'status', 'access', 'join')
@@ -403,19 +404,35 @@ def show_files(config):
 
 
 def status(vm, json_output=False):
-    entries = {role: vm.info(getattr(vm, role)) for role in ('gateway', 'machine')}
+    entries, inspection_error = {}, None
+    for role in ('gateway', 'machine'):
+        try:
+            entries[role] = vm.info(getattr(vm, role))
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            entries[role] = {'State': {'Status': 'unavailable'}}
+            inspection_error = 'Container inspection is unavailable; check Podman and the shared gateway.'
     report = {
         'profile': vm.profile, 'state_dir': str(vm.state), 'configuration': str(vm.config_path),
         'configuration_valid': bool(vm.config) and not vm.config_error,
         'configuration_error': vm.config_error,
         **{role: item['State']['Status'] if item else 'stopped' for role, item in entries.items()},
         'routing_mode': 'wireguard', 'shared_gateway': vm.gateway,
+        'inspection_error': inspection_error,
     }
-    report['gateway_healthy'] = vm.health() if report['gateway'] == 'running' else False
+    report['recovery'] = vm.shared_gateway.recovery_status() if report['gateway'] == 'running' else None
+    recovery = report['recovery'] or {}
+    report['gateway_healthy'] = recovery.get('status') == 'healthy'
+    report['alert'] = route_alert(recovery=report['recovery'], gateway_status=report['gateway'],
+                                 active=report['machine'] in ('running', 'unavailable'))
     if json_output:
         print(json.dumps(report, indent=2))
         return 0
-    print(vm.profile + ': VM ' + report['machine'] + '; route ' + ('healthy' if report['gateway_healthy'] else 'closed'))
+    phase = recovery.get('status')
+    route = 'healthy' if phase == 'healthy' else 'recovering' if phase == 'recovering' else (
+        'closed' if phase in ('failed', 'blocked') else 'status unavailable')
+    print(vm.profile + ': VM ' + report['machine'] + '; route ' + route)
+    if inspection_error:
+        print(inspection_error)
     if not report['configuration_valid']:
         print('Settings: ' + (vm.config_error or 'not configured; run lemonbox setup'))
     if vm.config:
@@ -425,9 +442,30 @@ def status(vm, json_output=False):
         print('Shared gateway: ' + vm.gateway + '; required public exit: ' + route.network['expected_exit_ip'])
     except (ValueError, OSError) as error:
         print('Shared route settings: ' + str(error))
-    if report['machine'] == 'running' and not report['gateway_healthy']:
-        print('Internet is closed. Recover the shared gateway in lemonbox settings; lemonbox shell remains available.')
+    if report['machine'] == 'running' and phase in ('recovering', 'failed', 'blocked'):
+        if recovery.get('retrying', recovery.get('status') == 'recovering'):
+            print('Internet is closed while automatic recovery retries the fixed route '
+                  '(attempt ' + str(recovery['attempts']) + '). Shell access remains available.')
+        else:
+            print('Internet is closed and needs attention. After fixing the cause, recover the shared gateway '
+                  'in lemonbox settings; shell access remains available.')
+    alert = report['alert']
+    if alert and alert.get('status') == 'active':
+        print('ALERT: ' + alert['reason'])
     return 0
+
+
+def warn_gateway(vm):
+    """Display the gateway's report while leaving repair commands available."""
+    try:
+        machine = vm.info(vm.machine)
+        if not isinstance(machine, dict) or machine.get('State', {}).get('Status') != 'running':
+            return
+        alert = gateway_alert(vm.shared_gateway)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+        alert = route_alert(gateway_status='unavailable', active=bool(vm.config))
+    if alert:
+        print('ALERT: ' + alert['reason'], file=sys.stderr)
 
 
 def prerequisites(vm):
@@ -751,6 +789,9 @@ def dispatch_connection(args):
         raise ValueError('An SSH connection supports claude, shell, status and exec; VM controls require an explicit --profile')
     connection = Connection.load(args.connection)
     workflow = RemoteWorkflow(connection, workdir=getattr(args, 'workdir', None))
+    alert = connection_alert(connection)
+    if args.action != 'status' and alert:
+        print('ALERT: ' + alert['reason'], file=sys.stderr)
     if args.action == 'claude':
         return workflow.claude(args.arguments)
     if args.action == 'shell':
@@ -759,13 +800,17 @@ def dispatch_connection(args):
         return workflow.execute(args.arguments)
     report = {'connection': connection.name, 'host': connection.invitation['host'],
               'port': connection.invitation['port'], 'username': connection.username,
-              'host_key_fingerprint': connection.fingerprint, 'ssh_available': connection.reachable()}
+              'host_key_fingerprint': connection.fingerprint, 'ssh_available': connection.reachable(),
+              'alert': alert}
     if args.json:
         print(json.dumps(report, indent=2))
     else:
         print(connection.address)
         print('SSH: ' + ('ready' if report['ssh_available'] else 'unavailable; check the address, key authorization and SSH agent'))
         print('Pinned host key: ' + report['host_key_fingerprint'])
+        if alert:
+            print('ALERT: ' + alert['reason'])
+            print('Run lemonbox --profile default status for local gateway details.')
     return 0 if report['ssh_available'] else 1
 
 
@@ -898,6 +943,8 @@ def main(argv=None):
             if chosen is None:
                 return 0
             vm, args = chosen
+        if args.action != 'status' and not (args.action == 'diagnose' and args.host):
+            warn_gateway(vm)
         return dispatch(vm, args)
     except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
         print('lemonbox: ' + str(error), file=sys.stderr)

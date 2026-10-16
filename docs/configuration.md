@@ -28,7 +28,7 @@ POSIX ACLs on the default host workspace give approved local users direct read/w
 
 VMs with the default workspace use SSH PAM session rules to give the shared guest account a `000` umask. Normal new files are writable by collaborators; explicitly private file modes and a user-selected umask still apply. The native QEMU sharing mode does not expose host ACLs to the guest, so host ACL inheritance alone cannot set guest file creation permissions. See the [QEMU ACL handlers](https://github.com/qemu/qemu/blob/v10.0.0/hw/9pfs/9p-posix-acl.c).
 
-The shared gateway enforces the route and public exit. Kernel-expiring permissions close traffic when health checks or transport stop. Guests contain no transport clients, proxy variables or route credentials. A failure stays closed until explicit shared gateway recovery.
+The shared gateway enforces the route and public exit. Kernel-expiring permissions close traffic when health checks or transport stop. Guests contain no transport clients, proxy variables or route credentials. The gateway continuously verifies the route and repairs transient failures on the same tunnel, verifying the public exit before guest traffic reopens. It publishes recovery state and alerts for `lemonbox status` and other local Lemonbox commands to display. Missing or stale reports appear as status unavailable. Unexpected exits, invalid configuration and operator blocks stay closed for inspection.
 
 ## Private state
 

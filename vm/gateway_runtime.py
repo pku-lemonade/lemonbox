@@ -1,6 +1,7 @@
 """One owner-managed packet gateway shared by all local VM profiles."""
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -8,7 +9,7 @@ import subprocess
 import time
 
 from .config import RouteConfig, _read_json, write_private_json
-from .route_contract import GUEST_POOL, MAX_GUESTS
+from .route_contract import GUEST_POOL, LEASE_SECONDS, MAX_GUESTS
 from .state import ProfileState, UNSPECIFIED
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -214,8 +215,68 @@ class SharedGateway:
             return applied
 
     def health(self):
-        return run(['podman', 'exec', self.name, 'python3', '/opt/lemon/controller.py', 'check', '--local'],
-                   check=False, timeout=10).returncode == 0
+        """Consume the controller's published health without running a check."""
+        return (self.recovery_status() or {}).get('status') == 'healthy'
+
+    def recovery_status(self):
+        """Read bounded controller reports; an expired report is unavailable."""
+        reader = '''import json, math
+def read(path):
+    with open(path, 'rb') as handle:
+        data = handle.read(4097)
+    if len(data) > 4096:
+        raise ValueError('oversized status')
+    value = json.loads(data)
+    if not isinstance(value, dict):
+        raise ValueError('invalid status')
+    return value
+value = read('/run/lemon/recovery.json')
+if value.get('status') == 'healthy':
+    value['last_verified'] = value.get('time')
+    try:
+        health = read('/run/lemon/last-health.json')
+    except FileNotFoundError:
+        health = None
+    if health is not None:
+        stamp = health.get('time')
+        if type(stamp) not in (int, float) or not math.isfinite(stamp):
+            raise ValueError('invalid health timestamp')
+        if stamp >= value['time']:
+            value['last_verified'] = stamp
+public = ('schema', 'status', 'attempts', 'time', 'error_type', 'retrying', 'last_verified')
+print(json.dumps({key: value[key] for key in public if key in value}))
+'''
+        try:
+            result = run(['podman', 'exec', self.name, 'python3', '-c', reader],
+                         check=False, timeout=5)
+            if result.returncode or len(result.stdout) > 4096:
+                return None
+            value = json.loads(result.stdout)
+            if (not isinstance(value, dict) or type(value.get('schema')) is not int or value['schema'] != 1
+                    or value.get('status') not in ('healthy', 'recovering', 'failed', 'blocked')
+                    or type(value.get('attempts')) is not int or value['attempts'] < 0
+                    or ('retrying' in value and type(value['retrying']) is not bool)):
+                return None
+            now = time.time()
+            for key in ('time', 'last_verified'):
+                if key not in value and key != 'time':
+                    continue
+                stamp = value.get(key)
+                if (type(stamp) not in (int, float) or stamp < 0
+                        or stamp > now + 1 or not math.isfinite(stamp)):
+                    return None
+            if value['status'] == 'healthy':
+                verified = max(value['time'], value.get('last_verified', value['time']))
+                if now - verified >= LEASE_SECONDS:
+                    return None
+                value['last_verified'] = verified
+            if ('error_type' in value and (not isinstance(value['error_type'], str)
+                    or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_.]{0,63}', value['error_type']))):
+                return None
+            return {key: value[key] for key in ('status', 'attempts', 'time', 'error_type', 'retrying',
+                                               'last_verified') if key in value}
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            return None
 
     def ensure_running(self):
         with self.profile_state.lock():
@@ -226,8 +287,15 @@ class SharedGateway:
                 if (info.get('Image', '').removeprefix('sha256:') != selected.removeprefix('sha256:')
                         or info.get('Config', {}).get('Labels', {}).get(ROUTE_LABEL) != applied['network_sha256']):
                     raise ValueError('The running shared gateway differs from its applied settings')
-                if not self.health():
-                    raise ValueError('The shared route is closed; run lemonbox stop --all, then Recover in lemonbox settings')
+                recovery = self.recovery_status()
+                if recovery is None:
+                    raise ValueError('Gateway status is unavailable; run lemonbox status or logs')
+                if recovery.get('status') != 'healthy':
+                    if recovery.get('retrying', recovery.get('status') == 'recovering'):
+                        raise ValueError('The shared route is closed; automatic recovery is retrying the fixed route. '
+                                         'Run lemonbox status for recovery and alert details; shell access remains available')
+                    raise ValueError('The shared route is closed and needs attention; run lemonbox status. '
+                                     'After fixing the cause, stop all VMs and Recover in lemonbox settings')
                 return selected
             self._require_idle()
             if info:

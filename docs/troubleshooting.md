@@ -8,14 +8,20 @@ Follow [Host preparation](setup.md) for tools and manually prepared assets. Afte
 
 ## Internet is closed
 
-A shared gateway failure closes Internet access for all attached VMs. Their running shells remain available.
+A shared gateway failure closes Internet access for all attached VMs. Their running shells remain available. The gateway automatically restarts the same fixed transport after a timeout, expired lease, missing route or exited transport process. TAPs, VM disks and running VM processes are preserved. Guest traffic opens only after a native HTTPS check verifies the configured public exit.
+
+Run `lemonbox status` to view the gateway's reported recovery progress and alerts. The gateway continuously verifies the route and publishes its state. Repeated failures raise an alert while recovery continues more slowly inside the gateway container. An unexpected public exit, invalid profile or explicit operator block requires inspection and stays closed. Other local Lemonbox commands also display reported gateway alerts when invoked; alerts clear after the gateway reports recovery.
+
+Missing or stale gateway reports appear as status unavailable. Use `lemonbox logs` to inspect gateway logs, or run `lemonbox diagnose` for an explicit network check.
+
+If the reported cause requires a route/configuration repair or gateway replacement, fix it first, then perform manual recovery:
 
 ```bash
 lemonbox stop --all
 lemonbox settings
 ```
 
-Choose **Recover the shared gateway**, then start your VMs. Recovery uses the same fixed route; no alternative connection is selected. If the chain or external services remain unavailable, traffic stays closed. Restore external services through your own administration method; [Manual VPS reference](vps.md).
+Choose **Recover the shared gateway**, then start your VMs. Manual replacement stops guest sessions; ordinary automatic tunnel recovery does not. If the chain or external services remain unavailable, traffic stays closed. Restore external services through your own administration method; [Manual VPS reference](vps.md).
 
 ## Invalid settings or failed restart
 

@@ -182,6 +182,7 @@ def firewall(config, settings, guests):
 {registered}
   set transport_ready {{ type ipv4_addr; flags timeout; timeout {LEASE_SECONDS}s; }}
   set guest_ready {{ type ipv4_addr; flags timeout; timeout {LEASE_SECONDS}s; }}
+  set recovery_allowed {{ type mark; elements = {{ 1 }}; }}
   chain guest_ingress {{
     type filter hook prerouting priority mangle; policy accept;
     iifname @guest_interfaces meta nfproto != ipv4 counter drop
@@ -235,7 +236,7 @@ def _stop(process):
             process.wait(timeout=3)
 
 
-def start_wireguard(settings):
+def start_wireguard(settings, *, stopping=None):
     """Create the TUN device and peer; keep the private key out of argv/logs."""
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     WIREGUARD_STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -246,11 +247,16 @@ def start_wireguard(settings):
         deadline = time.monotonic() + 10
         control_socket = WIREGUARD_STATE / (INTERFACE + ".sock")
         while not control_socket.exists():
+            if stopping is not None and stopping.is_set():
+                raise OSError("WireGuard startup stopped")
             if process.poll() is not None:
                 raise OSError("WireGuard process exited during startup")
             if time.monotonic() >= deadline:
                 raise OSError("WireGuard control socket startup timed out")
-            time.sleep(0.05)
+            if stopping is None:
+                time.sleep(0.05)
+            else:
+                stopping.wait(0.05)
         with tempfile.NamedTemporaryFile(mode="w", prefix="wireguard-", suffix=".conf",
                                          dir=STATE, delete=False, encoding="ascii") as handle:
             temporary = Path(handle.name)
@@ -296,6 +302,22 @@ def setup_network(settings):
                 raise OSError(f"{setting} must be configured as0 by the container launcher")
     if Path("/proc/sys/net/ipv4/ip_forward").read_text().strip() != "1":
         raise OSError("ip_forward must be configured as1 by the container launcher")
+
+
+def reset_network(settings):
+    """After reaping the tunnel, remove only its device and exact route rules."""
+    links = json.loads(command(["ip", "-j", "link", "show"]))
+    if any(link.get("ifname") == INTERFACE for link in links):
+        command(["ip", "link", "del", "dev", INTERFACE])
+    (WIREGUARD_STATE / (INTERFACE + ".sock")).unlink(missing_ok=True)
+    for selector in (("177", "fwmark", str(ROUTE_MARK)),
+                     ("178", "from", str(settings.client_address.ip))):
+        # An absent rule is expected on first startup. All selectors are the
+        # immutable private route; guest TAPs and the underlay default stay put.
+        result = subprocess.run(["ip", "rule", "del", "priority", *selector, "lookup", str(ROUTE_TABLE)],
+                                text=True, capture_output=True, timeout=10)
+        if result.returncode not in (0, 2):
+            raise RuntimeError("private tunnel rule reset failed")
 
 
 def create_guest(record):
