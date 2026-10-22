@@ -218,7 +218,7 @@ class Workflow:
     def desktop_password(self):
         if not self.profile.get("desktop"):
             raise ValueError("This VM was prepared without the desktop")
-        return Desktop(self.vm).password()
+        return Desktop(self.vm).password(create=False)
 
     def vnc(self, port=5901, *, stop=False, open_viewer=False, tailnet=False):
         """Expose the optional desktop through a local or tailnet SSH tunnel."""

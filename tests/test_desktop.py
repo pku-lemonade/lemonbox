@@ -35,6 +35,15 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(self.desktop.path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.vm.state.stat().st_mode & 0o777, 0o700)
 
+    def test_password_query_never_creates_credentials_or_profile_state(self):
+        with self.assertRaisesRegex(ValueError, 'No VNC password'):
+            self.desktop.password(create=False)
+        self.assertFalse(self.vm.state.exists())
+        password = self.desktop.password()
+        before = {p.name: p.read_bytes() for p in self.vm.state.iterdir()}
+        self.assertEqual(self.desktop.password(create=False), password)
+        self.assertEqual({p.name: p.read_bytes() for p in self.vm.state.iterdir()}, before)
+
     def test_public_symlinked_and_malformed_credentials_are_not_overwritten(self):
         original = self.desktop.password()
         self.desktop.path.chmod(0o644)

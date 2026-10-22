@@ -2,6 +2,10 @@
 
 Run `lemonbox` for the menu. It remembers your selected VM and offers setup when needed.
 
+The selection is saved for your host user and shared across terminals. Before each command, Lemonbox prints a prominent target line on stderr, such as `==> Lemonbox VM: work [remembered selection]`. Joined connections show their saved name and SSH address; commands affecting the shared gateway or all VMs state that scope. JSON, command output and displayed passwords stay on stdout. Use `lemonbox --profile NAME shell` to target a VM for one command without changing the remembered selection.
+
+Queries use the remembered selection without prompting: `status`, `logs`, `diagnose`, `settings --path`, `files list`, `access list` and `desktop --show-password`. Other direct commands ask you to confirm the target unless you specify `--profile NAME` or `--connection NAME`. Confirmation defaults to **No**. This includes `shell`, `claude` and `exec`, which can start a VM or change guest files; Lemonbox does not try to classify an arbitrary guest command as read-only. Piped input and other noninteractive runs require an explicit target and never consume input for confirmation. Choosing an action in the menu already identifies its target. Joining a VM uses its own owner/fingerprint approval flow.
+
 | Command | What it does |
 | --- | --- |
 | `lemonbox claude` | Open native Claude in your VM |
@@ -20,7 +24,7 @@ Run `lemonbox` for the menu. It remembers your selected VM and offers setup when
 ```bash
 lemonbox claude --resume
 lemonbox claude --print 'Explain this project'
-printf 'Summarize this text' | lemonbox claude --print
+printf 'Summarize this text' | lemonbox --profile default claude --print
 lemonbox shell
 ```
 
@@ -33,8 +37,8 @@ lemonbox claude --workdir /home/debian/project -- --resume
 For scripts, `exec` passes arguments and stdin to the guest and returns its exit code:
 
 ```bash
-lemonbox exec -- git --version
-lemonbox exec --workdir /home/debian/project -- git status
+lemonbox --profile default exec -- git --version
+lemonbox --profile default exec --workdir /home/debian/project -- git status
 ```
 
 A running guest's shell and `exec` remain accessible when Internet access is closed, provisioning has failed or an unrelated service is degraded.
@@ -221,7 +225,7 @@ Once joined:
 ```bash
 lemonbox claude --resume
 lemonbox shell
-printf 'hello' | lemonbox exec -- cat
+printf 'hello' | lemonbox --connection shared exec -- cat
 lemonbox status
 ```
 

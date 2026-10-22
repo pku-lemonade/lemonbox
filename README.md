@@ -47,6 +47,8 @@ Select or create a VM in the menu. Each VM has its own disk, account, SSH identi
 
 Use `lemonbox settings` for VM settings or the shared route. Shared route changes, manual gateway replacement and runtime updates require all VMs stopped. Automatic tunnel recovery preserves running VMs. Templates contain VM settings only; credentials are stored once in the shared gateway directory.
 
+The menu remembers one selection for your host user across terminals. Commands print their target before acting and mark a remembered selection. Queries run directly; other direct commands require confirmation when the target is implicit. Noninteractive commands that can make changes require an explicit target. `lemonbox --profile NAME shell` selects one for this command without changing the saved choice.
+
 ## Join a shared VM
 
 On the same Linux host:

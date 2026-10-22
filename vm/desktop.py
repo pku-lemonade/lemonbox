@@ -17,21 +17,32 @@ class Desktop:
         self.path = vm.state / 'desktop.json'
         self.state = ProfileState(vm.state)
 
-    def password(self):
+    def _read_password(self):
+        if self.path.is_symlink():
+            raise ValueError('Desktop credentials must not be a symlink')
+        if not self.path.exists():
+            return None
+        info = self.path.stat()
+        if not self.path.is_file() or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError('Desktop credentials must be a private file owned by you')
+        data = json.loads(self.path.read_text())
+        if (not isinstance(data, dict) or set(data) != {'version', 'password'}
+                or type(data['version']) is not int or data['version'] != 1
+                or not isinstance(data['password'], str)
+                or not re.fullmatch(r'[A-Za-z0-9]{8}', data['password'])):
+            raise ValueError('Invalid desktop credentials')
+        return data['password']
+
+    def password(self, *, create=True):
+        if not create:
+            password = self._read_password()
+            if password is None:
+                raise ValueError('No VNC password is configured; start the desktop first')
+            return password
         with self.state.lock():
-            if self.path.is_symlink():
-                raise ValueError('Desktop credentials must not be a symlink')
-            if self.path.exists():
-                info = self.path.stat()
-                if not self.path.is_file() or info.st_uid != os.getuid() or info.st_mode & 0o077:
-                    raise ValueError('Desktop credentials must be a private file owned by you')
-                data = json.loads(self.path.read_text())
-                if (not isinstance(data, dict) or set(data) != {'version', 'password'}
-                        or type(data['version']) is not int or data['version'] != 1
-                        or not isinstance(data['password'], str)
-                        or not re.fullmatch(r'[A-Za-z0-9]{8}', data['password'])):
-                    raise ValueError('Invalid desktop credentials')
-                return data['password']
+            password = self._read_password()
+            if password is not None:
+                return password
             password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
             write_private_json(self.path, {'version': 1, 'password': password})
             return password

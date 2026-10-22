@@ -46,7 +46,8 @@ class ArgumentsTests(unittest.TestCase):
         self.assertEqual(args.arguments, ['--work', 'native-option'])
 
     def test_invalid_ports_and_timeout_fail_before_runtime_construction(self):
-        for argv in (['desktop', '--port', '0'], ['desktop', '--port', '65536'], ['start', '--timeout', '0']):
+        for argv in (['desktop', '--port', '0'], ['desktop', '--port', '65536'], ['start', '--timeout', '0'],
+                     ['--profile', '', 'stop'], ['--connection', '', 'shell']):
             with patch.object(cli, 'VM') as vm, contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 cli.main(argv)
             vm.assert_not_called()
@@ -74,8 +75,8 @@ class DispatchTests(unittest.TestCase):
     def test_exec_and_shell_use_repair_access(self):
         with patch.object(cli, 'VM', return_value=self.vm), patch.object(cli, 'repair_access', return_value=self.workflow) as repair, \
                 patch.object(cli, 'ensure_running') as full_ready:
-            self.assertEqual(cli.main(['exec', '--', 'bash', '-c', 'exit 42']), 42)
-            cli.main(['shell'])
+            self.assertEqual(cli.main(['--profile', 'default', 'exec', '--', 'bash', '-c', 'exit 42']), 42)
+            cli.main(['--profile', 'default', 'shell'])
         self.workflow.execute.assert_called_once_with(['bash', '-c', 'exit 42'])
         self.assertEqual(repair.call_count, 2)
         full_ready.assert_not_called()
@@ -84,7 +85,7 @@ class DispatchTests(unittest.TestCase):
         self.vm.info.return_value = {'State': {'Status': 'running'}}
         with patch.object(cli, 'VM', return_value=self.vm), patch.object(cli, 'Workflow', return_value=self.workflow), \
                 patch.object(cli, 'ensure_running') as ready:
-            cli.main(['desktop', '--stop'])
+            cli.main(['--profile', 'default', 'desktop', '--stop'])
         self.workflow.vnc.assert_called_once_with(5908, stop=True)
         ready.assert_not_called()
         self.vm.health.assert_not_called()
@@ -110,8 +111,19 @@ class DispatchTests(unittest.TestCase):
         self.vm.info.return_value = None
         with patch.object(cli, 'VM', return_value=self.vm), patch.object(cli, 'Workflow') as workflow, \
                 contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(['desktop', '--stop']), 0)
+            self.assertEqual(cli.main(['--profile', 'default', 'desktop', '--stop']), 0)
         workflow.assert_not_called()
+        self.vm.up.assert_not_called()
+
+    def test_access_list_does_not_start_a_stopped_vm(self):
+        self.workflow.accessible.side_effect = RuntimeError('VM is stopped')
+        with patch.object(cli, 'VM', return_value=self.vm), \
+                patch.object(cli, 'Workflow', return_value=self.workflow), \
+                patch.object(cli, 'repair_access') as repair, \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(['access', 'list']), 1)
+        self.workflow.accessible.assert_called_once()
+        repair.assert_not_called()
         self.vm.up.assert_not_called()
 
     def test_nonterminal_noargs_prints_help_without_starting(self):
@@ -131,7 +143,7 @@ class DispatchTests(unittest.TestCase):
     def test_stop_backend_error_is_not_reported_as_success(self):
         self.vm.down.side_effect = RuntimeError('Container backend failed')
         with patch.object(cli, 'VM', return_value=self.vm), contextlib.redirect_stderr(io.StringIO()) as output:
-            self.assertEqual(cli.main(['stop']), 1)
+            self.assertEqual(cli.main(['--profile', 'default', 'stop']), 1)
         self.assertIn('Container backend failed', output.getvalue())
         self.vm.profile_state.lock.return_value.__exit__.assert_called_once()
 
@@ -282,6 +294,173 @@ class ReadinessConcurrencyTests(unittest.TestCase):
             vm.info.return_value = {'Id': 'replacement', 'State': {'Status': 'running'}}
             with self.assertRaisesRegex(RuntimeError, 'restarted'):
                 guard()
+
+
+class TargetOutputTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix='lemon-target-output-')
+        self.addCleanup(directory.cleanup)
+        self.home = Path(directory.name)
+        home = patch.object(cli.Path, 'home', return_value=self.home)
+        home.start()
+        self.addCleanup(home.stop)
+        self.vm, self.workflow = MagicMock(), MagicMock()
+        for replacement in (patch.object(cli, 'VM', return_value=self.vm),
+                            patch.object(cli, 'warn_gateway'),
+                            patch.object(cli, 'Workflow', return_value=self.workflow),
+                            patch.object(cli, 'repair_access', return_value=self.workflow)):
+            replacement.start()
+            self.addCleanup(replacement.stop)
+
+    def test_remembered_vm_is_announced_without_changing_guest_stdout_or_exit_status(self):
+        cli.select_profile('work')
+
+        def execute(arguments):
+            print('guest output')
+            return 7
+
+        self.workflow.execute.side_effect = execute
+        with patch.object(cli.sys.stdin, 'isatty', return_value=True), \
+                patch.object(cli, '_confirm', return_value=True), \
+                contextlib.redirect_stdout(io.StringIO()) as output, \
+                contextlib.redirect_stderr(io.StringIO()) as diagnostics:
+            self.assertEqual(cli.main(['exec', '--', 'some-command']), 7)
+        self.assertEqual(output.getvalue(), 'guest output\n')
+        self.assertIn('==> Lemonbox VM: work [remembered selection]', diagnostics.getvalue())
+        self.assertEqual(cli.VM.call_args.args[0].profile, 'work')
+
+    def test_explicit_override_is_announced_without_changing_saved_selection_or_password_output(self):
+        cli.select_profile('work')
+        saved = cli.selection_path().read_bytes()
+        self.workflow.desktop_password.return_value = 'testpass'
+        with contextlib.redirect_stdout(io.StringIO()) as output, \
+                contextlib.redirect_stderr(io.StringIO()) as diagnostics:
+            self.assertEqual(cli.main(['--profile', 'other', 'desktop', '--show-password']), 0)
+        self.assertEqual(output.getvalue(), 'testpass\n')
+        self.assertIn('==> Lemonbox VM: other', diagnostics.getvalue())
+        self.assertNotIn('[remembered selection]', diagnostics.getvalue())
+        self.assertEqual(cli.selection_path().read_bytes(), saved)
+
+    def test_target_banner_leaves_json_stdout_parseable(self):
+        cli.select_profile('work')
+        with patch.object(cli, 'status', side_effect=lambda *_: print('{"profile":"work"}')), \
+                contextlib.redirect_stdout(io.StringIO()) as output, \
+                contextlib.redirect_stderr(io.StringIO()) as diagnostics:
+            cli.main(['status', '--json'])
+        self.assertEqual(json.loads(output.getvalue()), {'profile': 'work'})
+        self.assertIn('VM: work [remembered selection]', diagnostics.getvalue())
+
+    def test_stop_all_announces_all_vms_instead_of_only_the_remembered_profile(self):
+        cli.select_profile('work')
+        with contextlib.redirect_stderr(io.StringIO()) as diagnostics:
+            cli.main(['--profile', 'work', 'stop', '--all'])
+        self.vm.stop_all.assert_called_once()
+        self.assertIn('all local VMs and the shared gateway', diagnostics.getvalue())
+        self.assertNotIn('VM: work', diagnostics.getvalue())
+        self.assertNotIn('[remembered selection]', diagnostics.getvalue())
+
+    def test_queries_use_remembered_selection_without_confirmation(self):
+        cli.select_profile('work')
+        for arguments in (['status'], ['status', '--json'], ['logs'], ['logs', '--guest'],
+                          ['diagnose'], ['diagnose', '--host'], ['settings', '--path'],
+                          ['settings', '--route', '--path'], ['files', 'list'], ['access', 'list'],
+                          ['desktop', '--show-password']):
+            with self.subTest(arguments=arguments), \
+                    patch.object(cli, '_confirm', side_effect=AssertionError('Query prompted')), \
+                    patch.object(cli, 'dispatch', return_value=0) as dispatch, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(cli.main(arguments), 0)
+            self.assertEqual(dispatch.call_args.args[1].profile, 'work')
+
+    def test_noninteractive_changes_cannot_construct_a_vm_or_consume_piped_input(self):
+        cli.select_profile('work')
+        for arguments in (['start'], ['stop'], ['restart'], ['setup'], ['update'], ['stop', '--all'],
+                          ['settings'], ['settings', '--apply'], ['settings', '--route', '--apply'],
+                          ['settings', '--save-template', 'copy'], ['files'], ['files', 'remove', 'project'],
+                          ['files', 'add', '/some/folder'], ['access'], ['access', 'add', 'alice'],
+                          ['access', 'remove', 'alice'], ['access', 'stop'], ['desktop'],
+                          ['desktop', '--stop'], ['desktop', '--tailnet'], ['shell'], ['claude'],
+                          ['exec', '--', 'touch', '/tmp/file'], ['claude', '--profile', 'other'],
+                          ['exec', '--', 'echo', '--profile', 'other']):
+            cli.VM.reset_mock()
+            stream = io.StringIO('guest command input\n')
+            with self.subTest(arguments=arguments), patch.object(cli.sys, 'stdin', stream), \
+                    patch.object(cli, '_confirm', side_effect=AssertionError('Piped input prompted')), \
+                    contextlib.redirect_stdout(io.StringIO()) as output, \
+                    contextlib.redirect_stderr(io.StringIO()) as diagnostics:
+                self.assertEqual(cli.main(arguments), 1)
+            cli.VM.assert_not_called()
+            self.assertEqual(stream.tell(), 0)
+            self.assertEqual(output.getvalue(), '')
+            self.assertIn('--profile work', diagnostics.getvalue())
+
+    def test_interactive_changes_require_yes_and_cancellation_never_constructs_a_vm(self):
+        class TerminalInput(io.StringIO):
+            def isatty(self):
+                return True
+
+        cli.select_profile('work')
+        for answer in ('yes\n', 'no\n', '\n', ''):
+            cli.VM.reset_mock()
+            self.vm.down.reset_mock()
+            with self.subTest(answer=answer), patch.object(cli.sys, 'stdin', TerminalInput(answer)), \
+                    contextlib.redirect_stdout(io.StringIO()) as output, \
+                    contextlib.redirect_stderr(io.StringIO()) as diagnostics:
+                result = cli.main(['stop'])
+            self.assertIn('Run stop on VM: work? [y/N]: ', diagnostics.getvalue())
+            self.assertEqual(output.getvalue(), '')
+            if answer == 'yes\n':
+                self.assertEqual(result, 0)
+                self.vm.down.assert_called_once()
+            else:
+                self.assertEqual(result, 130)
+                cli.VM.assert_not_called()
+                self.vm.down.assert_not_called()
+
+    def test_default_profile_also_requires_confirmation_for_changes(self):
+        with patch.object(cli.sys, 'stdin', io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as diagnostics:
+            self.assertEqual(cli.main(['start']), 1)
+        cli.VM.assert_not_called()
+        self.assertIn('--profile default', diagnostics.getvalue())
+
+    def test_explicit_target_allows_noninteractive_changes_and_preserves_selection(self):
+        cli.select_profile('work')
+        with patch.object(cli.sys, 'stdin', io.StringIO()), \
+                patch.object(cli, '_confirm', side_effect=AssertionError('Explicit target prompted')), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(['--profile', 'other', 'stop']), 0)
+        self.vm.down.assert_called_once()
+        self.assertEqual(cli.selected_target(), {'kind': 'vm', 'profile': 'work'})
+
+    def test_selection_changes_during_confirmation_do_not_redirect_the_command(self):
+        cli.select_profile('work')
+
+        def confirm(prompt):
+            cli.select_profile('other')
+            return True
+
+        with patch.object(cli.sys.stdin, 'isatty', return_value=True), \
+                patch.object(cli, '_confirm', side_effect=confirm), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(['stop']), 0)
+        self.assertEqual(cli.VM.call_args.args[0].profile, 'work')
+        self.vm.down.assert_called_once()
+        self.assertEqual(cli.selected_target(), {'kind': 'vm', 'profile': 'other'})
+
+    def test_menu_action_counts_as_explicit_selection(self):
+        cli.select_profile('work')
+        state = self.home / '.local/share/lemonbox/work'
+        state.mkdir()
+        self.vm.profile, self.vm.state = 'work', state
+        self.vm.config_path = state / 'config.json'
+        self.vm.config_path.write_text('{}')
+        with patch.object(cli.sys.stdin, 'isatty', return_value=True), \
+                patch.object(cli, '_answer', return_value='8'), \
+                patch.object(cli, '_confirm', side_effect=AssertionError('Menu action prompted twice')), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main([]), 0)
+        self.vm.down.assert_called_once()
 
 
 class SelectionTests(unittest.TestCase):

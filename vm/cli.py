@@ -33,9 +33,9 @@ def parser(*, advanced=False, client=False):
         allow_abbrev=False,
     )
     result.add_argument('--help-all', action='store_true', help='Show all commands and advanced options')
-    result.add_argument('--profile', help='Select a VM instead of the remembered choice' if advanced else argparse.SUPPRESS)
+    result.add_argument('--profile', help='Use this VM explicitly; changes to a remembered target require confirmation')
     result.add_argument('--state-dir', type=Path, help='Private VM state directory' if advanced and not client else argparse.SUPPRESS)
-    result.add_argument('--connection', help='Select a saved SSH-only connection' if advanced else argparse.SUPPRESS)
+    result.add_argument('--connection', help='Use this saved SSH connection explicitly')
     commands = result.add_subparsers(dest='action', metavar='COMMAND')
 
     def command(name, help_text):
@@ -118,7 +118,7 @@ def parse_arguments(argv):
         index += 2 if value in ('--profile', '--connection', '--state-dir') else 1
     explicit_profile = '--profile' in options
     explicit_connection = '--connection' in options
-    target = selected_target() if not explicit_profile else {'kind': 'vm', 'profile': 'default'}
+    target = selected_target() if not (explicit_profile or explicit_connection) else {'kind': 'vm', 'profile': 'default'}
     client = explicit_connection or target['kind'] == 'connection'
     argument_parser = parser(advanced='--help-all' in argv, client=client)
     args, unknown = argument_parser.parse_known_args(argv)
@@ -135,6 +135,10 @@ def parse_arguments(argv):
         argument_parser.error('Port must be between 1 and 65535')
     if args.action == 'settings' and args.route and args.save_template:
         argument_parser.error('Templates contain VM settings only')
+    if explicit_profile and not args.profile:
+        argument_parser.error('--profile must name a VM')
+    if explicit_connection and not args.connection:
+        argument_parser.error('--connection must name a saved SSH connection')
     if args.profile and args.connection:
         argument_parser.error('Choose --profile or --connection')
     if args.profile:
@@ -146,6 +150,8 @@ def parse_arguments(argv):
         args.profile = 'default'
     else:
         args.profile = target['profile']
+    args.selection_source = ('explicit' if explicit_profile or explicit_connection else
+                             'remembered' if selection_path().exists() else 'default')
     return args
 
 
@@ -185,6 +191,58 @@ def select_connection(name):
     from .connections import connection_directory
     connection_directory(name)
     save_selection({'kind': 'connection', 'name': name})
+
+
+def announce_target(args, *, connection=None):
+    """Identify the effective target on stderr before commands can act on it."""
+    remembered = False
+    if args.connection:
+        target = 'SSH connection: ' + args.connection
+        if connection is not None:
+            target += ' (' + connection.address + ')'
+        remembered = True
+    elif args.action == 'stop' and args.all:
+        target = 'all local VMs and the shared gateway'
+    elif (args.action == 'update' or (args.action == 'settings' and args.route)
+          or (args.action == 'logs' and not args.guest)):
+        target = 'shared gateway (all local VMs)'
+    elif args.action == 'diagnose' and args.host:
+        target = 'host prerequisites'
+    else:
+        target = 'VM: ' + args.profile
+        remembered = True
+    message = '==> Lemonbox ' + target
+    if remembered and getattr(args, 'selection_source', None) == 'remembered':
+        message += ' [remembered selection]'
+    if sys.stderr.isatty() and os.environ.get('TERM') != 'dumb' and 'NO_COLOR' not in os.environ:
+        message = '\033[1m' + message + '\033[0m'
+    print(message, file=sys.stderr)
+    return target
+
+
+def query_command(args):
+    """Only known queries can use an implicit target without confirmation."""
+    return (args.action in ('status', 'logs', 'diagnose')
+            or (args.action == 'settings' and args.path)
+            or (args.action == 'files' and args.files_action == 'list')
+            or (args.action == 'access' and args.access_action == 'list')
+            or (args.action == 'desktop' and args.show_password))
+
+
+def confirm_target(args, *, connection=None):
+    target = announce_target(args, connection=connection)
+    if args.selection_source == 'explicit' or query_command(args):
+        return True
+    option, name = ('--connection', args.connection) if args.connection else ('--profile', args.profile)
+    if not sys.stdin.isatty():
+        raise ValueError('Confirming ' + args.action + ' needs a terminal; select the target explicitly with '
+                         + option + ' ' + name)
+    # Confirmation must not contaminate guest output or consume piped command input.
+    with redirect_stdout(sys.stderr):
+        accepted = _confirm('Run ' + args.action + ' on ' + target + '?')
+    if not accepted:
+        print('Cancelled. No command was run.', file=sys.stderr)
+    return accepted
 
 
 def reconcile(vm, workflow):
@@ -545,7 +603,7 @@ def access_command(vm, args):
         Relay(vm).start()
         print('\nAccess granted to ' + username + '.\n\nThey run:\n  lemonbox join')
     elif action == 'list':
-        repair_access(vm)
+        Workflow(vm).accessible()
         show_access_people(access_people(vm))
     elif action == 'remove':
         if interactive:
@@ -793,8 +851,11 @@ def dispatch_connection(args):
     if args.action == 'join':
         return join_command(args)
     if args.action not in CLIENT_COMMANDS and args.action != 'exec':
+        announce_target(args)
         raise ValueError('An SSH connection supports claude, shell, status and exec; VM controls require an explicit --profile')
     connection = Connection.load(args.connection)
+    if not confirm_target(args, connection=connection):
+        return 130
     workflow = RemoteWorkflow(connection, workdir=getattr(args, 'workdir', None))
     alert = connection_alert(connection)
     if args.action != 'status' and alert:
@@ -944,12 +1005,16 @@ def main(argv=None):
                 if choice != '2':
                     raise ValueError('Choose 0, 1 or 2')
                 args.action = 'setup'
+        if args.action is not None and not confirm_target(args):
+            return 130
         vm = VM(args)
         if args.action is None:
             chosen = menu(vm, args)
             if chosen is None:
                 return 0
             vm, args = chosen
+            if not confirm_target(args):
+                return 130
         if args.action != 'status' and not (args.action == 'diagnose' and args.host):
             warn_gateway(vm)
         return dispatch(vm, args)

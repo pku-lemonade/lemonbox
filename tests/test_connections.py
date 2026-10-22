@@ -78,9 +78,15 @@ class ConnectionTests(unittest.TestCase):
         workflow = MagicMock()
         workflow.claude.return_value = 9
         with patch.object(cli, 'VM') as vm, \
-                patch('vm.connections.RemoteWorkflow', return_value=workflow):
+                patch('vm.connections.RemoteWorkflow', return_value=workflow), \
+                patch.object(cli.sys.stdin, 'isatty', return_value=True), \
+                patch.object(cli, '_confirm', return_value=True) as confirm, \
+                contextlib.redirect_stderr(io.StringIO()) as diagnostics:
             self.assertEqual(cli.main(['claude', '--version']), 9)
+        self.assertIn('==> Lemonbox SSH connection: shared (debian@localhost:2223) [remembered selection]',
+                      diagnostics.getvalue())
         vm.assert_not_called()
+        confirm.assert_called_once_with('Run claude on SSH connection: shared (debian@localhost:2223)?')
         workflow.claude.assert_called_once_with(['--version'])
 
     def test_joined_status_displays_on_demand_gateway_alert(self):
@@ -101,9 +107,29 @@ class ConnectionTests(unittest.TestCase):
         with patch('vm.connections.RemoteWorkflow', return_value=workflow), \
                 patch.object(cli, 'connection_alert', return_value={'status': 'active', 'reason': 'Gateway recovery needs attention.'}), \
                 contextlib.redirect_stderr(io.StringIO()) as output:
-            self.assertEqual(cli.main(['exec', '--', 'true']), 29)
+            self.assertEqual(cli.main(['--connection', 'shared', 'exec', '--', 'true']), 29)
         self.assertIn('ALERT: Gateway recovery needs attention.', output.getvalue())
         workflow.execute.assert_called_once_with(['true'])
+
+    def test_remembered_connection_changes_require_confirmation_before_guest_access(self):
+        cli.select_connection('shared')
+        with patch.object(cli.sys.stdin, 'isatty', return_value=True), \
+                patch.object(cli, '_confirm', return_value=False) as confirm, \
+                patch('vm.connections.RemoteWorkflow') as workflow, \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(['shell']), 130)
+        confirm.assert_called_once_with('Run shell on SSH connection: shared (debian@localhost:2223)?')
+        workflow.assert_not_called()
+
+    def test_remembered_connection_rejects_piped_changes_without_consuming_input(self):
+        cli.select_connection('shared')
+        stream = io.StringIO('guest input\n')
+        with patch.object(cli.sys, 'stdin', stream), patch('vm.connections.RemoteWorkflow') as workflow, \
+                contextlib.redirect_stderr(io.StringIO()) as diagnostics:
+            self.assertEqual(cli.main(['exec', '--', 'cat']), 1)
+        self.assertIn('--connection shared', diagnostics.getvalue())
+        self.assertEqual(stream.tell(), 0)
+        workflow.assert_not_called()
 
     def test_joined_mode_hides_owner_help_and_rejects_controls(self):
         cli.select_connection('shared')
