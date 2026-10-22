@@ -23,7 +23,7 @@ class LauncherTests(unittest.TestCase):
         for name in ('vm', 'guest', 'scripts'):
             (root / name).mkdir()
             (root / name).chmod(0o755)
-        for path in ('scripts/guest-prepare.py', 'guest/provision.sh', 'guest/desktop.sh',
+        for path in ('scripts/guest-prepare.py', 'guest/provision.sh', 'guest/desktop.sh', 'guest/desktop.py',
                      'guest/firefox-privacy.js', 'guest/readiness.py',
                      'guest/authorized_keys.py', 'guest/shares.py', 'vm/__init__.py'):
             (root / path).write_text('readable')
@@ -65,7 +65,7 @@ class LauncherTests(unittest.TestCase):
                 (root / name).chmod(0o755)
             (package / '__init__.py').write_text('')
             (package / '__init__.py').chmod(0o644)
-            for path in ('scripts/guest-prepare.py', 'guest/provision.sh', 'guest/desktop.sh',
+            for path in ('scripts/guest-prepare.py', 'guest/provision.sh', 'guest/desktop.sh', 'guest/desktop.py',
                          'guest/firefox-privacy.js', 'guest/readiness.py',
                          'guest/authorized_keys.py', 'guest/shares.py'):
                 (root / path).write_text('readable')

@@ -51,10 +51,13 @@ def parser(*, advanced=False, client=False):
         item.add_argument('--workdir', help='Absolute working directory inside the VM')
         if name != 'shell':
             item.add_argument('arguments', nargs=argparse.REMAINDER)
-    desktop = command('desktop', 'Open the desktop over a localhost VNC connection')
-    desktop.add_argument('--port', type=int, help='Override the saved local VNC port')
+    desktop = command('desktop', 'Open the desktop over a local or tailnet VNC connection')
+    desktop.add_argument('--port', type=int, help='Override the saved host VNC port')
     desktop.add_argument('--no-open', action='store_true', help='Print the VNC address without opening a viewer')
-    desktop.add_argument('--stop', action='store_true', help='Stop the guest desktop')
+    desktop.add_argument('--tailnet', action='store_true', help='Expose VNC on this host\'s Tailscale IPv4 address while this command runs')
+    desktop_actions = desktop.add_mutually_exclusive_group()
+    desktop_actions.add_argument('--stop', action='store_true', help='Stop the guest desktop')
+    desktop_actions.add_argument('--show-password', action='store_true', help='Show this VM\'s VNC password without starting it')
     files = command('files', 'Choose host folders to mount in your VM')
     shares = files.add_subparsers(dest='files_action')
     add = shares.add_parser('add', allow_abbrev=False, help='Add a folder and apply it')
@@ -483,6 +486,9 @@ def prerequisites(vm):
 
 
 def guest_command(vm, args):
+    if args.action == 'desktop' and args.show_password:
+        print(Workflow(vm).desktop_password())
+        return 0
     if args.action == 'desktop' and args.stop:
         machine = vm.info(vm.machine)
         if not machine or machine['State']['Status'] != 'running':
@@ -500,7 +506,8 @@ def guest_command(vm, args):
         return workflow.execute(args.arguments)
     if args.action == 'claude':
         return workflow.claude(args.arguments)
-    return workflow.vnc(args.port or vm.config.desktop['port'], open_viewer=not args.no_open)
+    return workflow.vnc(args.port or vm.config.desktop['port'], open_viewer=not args.no_open,
+                        tailnet=args.tailnet)
 
 
 def access_command(vm, args):

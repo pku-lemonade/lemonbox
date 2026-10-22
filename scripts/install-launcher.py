@@ -17,7 +17,7 @@ def install(destination=DESTINATION):
     package = ROOT / 'vm'
     files = [source, ROOT / 'config.example.json', ROOT / 'route.example.json',
              ROOT / 'scripts/guest-prepare.py', ROOT / 'guest/provision.sh',
-             ROOT / 'guest/desktop.sh', ROOT / 'guest/firefox-privacy.js',
+             ROOT / 'guest/desktop.sh', ROOT / 'guest/desktop.py', ROOT / 'guest/firefox-privacy.js',
              ROOT / 'guest/readiness.py', ROOT / 'guest/authorized_keys.py',
              ROOT / 'guest/shares.py',
              *package.glob('*.py')]

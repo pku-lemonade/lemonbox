@@ -4,18 +4,72 @@ The CLI ensures the runtime is running and reconciles shared directories before
 calling shell, claude, execute, or vnc. No host environment or account credential
 is forwarded to the guest.
 """
+from contextlib import contextmanager
+import ipaddress
 import json
 from pathlib import Path, PurePosixPath
 import re
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import time
 
+from .desktop import Desktop
+
 
 READY_TIMEOUT = 3600
+
+
+def tailnet_address():
+    """Discover an address on the host's running Tailscale network interface."""
+    try:
+        result = subprocess.run(["tailscale", "status", "--json"], stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        raise RuntimeError("Install Tailscale on this host before using desktop --tailnet") from None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Tailscale status timed out; check tailscale status on this host") from None
+    if result.returncode:
+        raise RuntimeError("Could not read Tailscale status; check tailscale status on this host")
+    try:
+        status = json.loads(result.stdout)
+    except ValueError:
+        raise RuntimeError("Tailscale returned invalid status") from None
+    if not isinstance(status, dict):
+        raise RuntimeError("Tailscale returned invalid status")
+    if status.get("BackendState") != "Running":
+        raise RuntimeError("Connect this host to Tailscale before using desktop --tailnet")
+    if status.get("TUN") is not True:
+        raise RuntimeError("Desktop --tailnet requires Tailscale's network interface; userspace networking is unsupported")
+    addresses = status.get("TailscaleIPs")
+    for value in addresses if isinstance(addresses, list) else []:
+        try:
+            address = ipaddress.IPv4Address(value)
+        except (ValueError, TypeError):
+            continue
+        if address in ipaddress.IPv4Network("100.64.0.0/10"):
+            return str(address)
+    raise RuntimeError("Tailscale has no usable IPv4 address on this host")
+
+
+@contextmanager
+def _tunnel_signals():
+    """Run tunnel cleanup when a foreground command loses its terminal or stops."""
+    previous = {}
+
+    def stop(signum, frame):
+        raise SystemExit(128 + signum)
+
+    try:
+        for signum in (signal.SIGHUP, signal.SIGTERM):
+            previous[signum] = signal.signal(signum, stop)
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
 
 def working_directory(value):
@@ -161,13 +215,20 @@ class Workflow:
             raise ValueError("Provide a command, for example: lemonbox exec git status")
         return self.remote(self._guest_command(argv)).returncode
 
-    def vnc(self, port=5901, *, stop=False, open_viewer=False):
-        """Expose the optional desktop only through a loopback SSH tunnel."""
+    def desktop_password(self):
+        if not self.profile.get("desktop"):
+            raise ValueError("This VM was prepared without the desktop")
+        return Desktop(self.vm).password()
+
+    def vnc(self, port=5901, *, stop=False, open_viewer=False, tailnet=False):
+        """Expose the optional desktop through a local or tailnet SSH tunnel."""
         if not self.profile.get("desktop"):
             raise ValueError("This VM was prepared without the desktop")
         if not 1 <= port <= 65535:
             raise ValueError("VNC port must be between 1 and 65535")
-        action = "stop" if stop else "start"
+        host = tailnet_address() if tailnet and not stop else "127.0.0.1"
+        changed = Desktop(self.vm).configure(self) if not stop else False
+        action = "stop" if stop else "restart" if changed else "start"
         proc = self.remote(["sudo", "-n", "systemctl", action, "lemon-desktop.service"],
                             capture=True, timeout=45)
         if proc.returncode:
@@ -178,28 +239,35 @@ class Workflow:
         self._wait_desktop()
         command = ["ssh", "-F", str(self.vm.ssh_config()), "-T", "-N",
                    "-o", "ExitOnForwardFailure=yes", "-L",
-                   "127.0.0.1:" + str(port) + ":127.0.0.1:5900", "lemonbox"]
+                   host + ":" + str(port) + ":127.0.0.1:5900", "lemonbox"]
+        open_viewer = open_viewer and not tailnet
         viewer = self._viewer(port) if open_viewer else None
-        tunnel = subprocess.Popen(command)
-        try:
-            self._wait_tunnel(tunnel, port)
-            print("VNC: 127.0.0.1:" + str(port) + " (TigerVNC: 127.0.0.1::" + str(port)
-                  + "). Keep this terminal open; Ctrl-C closes the tunnel.", file=sys.stderr)
-            if open_viewer and not viewer:
-                print("No supported VNC viewer found. Open the address above in your viewer.", file=sys.stderr)
-            if viewer:
-                subprocess.Popen(viewer)
-            return tunnel.wait()
-        except KeyboardInterrupt:
-            return 130
-        finally:
-            if tunnel.poll() is None:
-                tunnel.terminate()
-                try:
-                    tunnel.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    tunnel.kill()
-                    tunnel.wait()
+        with _tunnel_signals():
+            tunnel = subprocess.Popen(command)
+            try:
+                self._wait_tunnel(tunnel, port, host=host)
+                print("VNC: " + host + ":" + str(port) + " (TigerVNC: " + host + "::" + str(port)
+                      + "). Keep this terminal open; Ctrl-C closes the tunnel.", file=sys.stderr)
+                print("Use desktop --show-password with the same VM selection to display its VNC password.",
+                      file=sys.stderr)
+                if tailnet:
+                    print("Connect from a device on your tailnet. Tailnet access rules also apply.",
+                          file=sys.stderr)
+                if open_viewer and not viewer:
+                    print("No supported VNC viewer found. Open the address above in your viewer.", file=sys.stderr)
+                if viewer:
+                    subprocess.Popen(viewer)
+                return tunnel.wait()
+            except KeyboardInterrupt:
+                return 130
+            finally:
+                if tunnel.poll() is None:
+                    tunnel.terminate()
+                    try:
+                        tunnel.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        tunnel.kill()
+                        tunnel.wait()
 
     def _wait_desktop(self, timeout=45):
         script = "import socket; socket.create_connection(('127.0.0.1',5900),timeout=1).close()"
@@ -229,13 +297,13 @@ class Workflow:
         return None
 
     @staticmethod
-    def _wait_tunnel(tunnel, port, timeout=15):
+    def _wait_tunnel(tunnel, port, timeout=15, *, host="127.0.0.1"):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if tunnel.poll() is not None:
                 raise RuntimeError("VNC tunnel failed; check whether the local port is already in use")
             try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                with socket.create_connection((host, port), timeout=0.25):
                     return
             except OSError:
                 time.sleep(0.1)

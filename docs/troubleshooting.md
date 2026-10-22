@@ -46,6 +46,10 @@ Desktop and Docker first boot downloads roughly 650 MB of guest software. Health
 
 `lemonbox desktop --no-open` prints the VNC address. Keep its terminal open; TigerVNC uses `127.0.0.1::5901`. Use `--port 5902` when another VM already uses that local port. The desktop must have been installed at creation. Inside the guest, inspect `sudo systemctl status lemon-desktop.service`.
 
+On a remote host, `lemonbox desktop --tailnet` prints the host's Tailscale IPv4 address for direct VNC access. Both computers must be connected to the tailnet, and tailnet access rules must allow the chosen TCP port. Check `tailscale status` on the host if address discovery fails. Userspace networking is unsupported. The listener closes when the desktop command exits; a VM without the desktop must be replaced with one created with **Install desktop** enabled.
+
+If your VNC viewer asks for a password, run `lemonbox desktop --show-password` on the host with the same `--profile` selection. Use this VNC password, rather than a host or guest login password. macOS Screen Sharing requires password authentication; restart the host's desktop command after updating Lemonbox to apply it to an existing VM.
+
 `lemonbox files list` shows host folders mounted directly under the guest home. The source must still exist and be accessible. Changing shares restarts only the selected VM. Read-only shares remain read-only to guest root.
 
 ## Joined SSH access

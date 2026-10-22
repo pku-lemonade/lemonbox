@@ -42,6 +42,7 @@ gateway/                 Shared credentials, rendered transport files and manual
 <vm-name>/
     config.json          VM settings and explicit host shares
     guest.json           Native identity and network allocation
+    desktop.json         Private generated VNC password, created on first use
     disk.qcow2           Persistent VM disk
     seed.iso             Initial cloud-init settings
     ssh/                 Owner access key and pinned native guest host key

@@ -37,6 +37,10 @@ Each new VM gets `~/workspace`, backed by `workspaces/<vm-name>/` inside the Lem
 
 `lemonbox desktop` starts the optional desktop and a localhost VNC tunnel. Keep its terminal open and use the displayed address. TigerVNC uses `127.0.0.1::5901`. Ctrl-C closes the tunnel; `lemonbox desktop --stop` stops the desktop.
 
+Use `lemonbox desktop --show-password` with the same VM selection to display its VNC password. Password authentication supports macOS Screen Sharing and other VNC viewers.
+
+On a remote host connected to Tailscale, use `lemonbox desktop --tailnet` and connect your VNC viewer to the displayed Tailscale address. Access lasts while the command runs. Anyone allowed by tailnet rules to reach that port can use the desktop with its VNC password. For two VMs, choose separate ports with `--port 5901` and `--port 5902`. See [Desktop](docs/usage.md#desktop).
+
 ## Multiple VMs
 
 Select or create a VM in the menu. Each VM has its own disk, account, SSH identity, private IPv4 and relay port. They can run concurrently through the same gateway and public exit. `lemonbox stop` and `restart` affect only the selected VM; `lemonbox stop --all` also stops the shared gateway.

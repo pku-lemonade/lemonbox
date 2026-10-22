@@ -89,6 +89,23 @@ class DispatchTests(unittest.TestCase):
         ready.assert_not_called()
         self.vm.health.assert_not_called()
 
+    def test_tailnet_desktop_uses_the_selected_vm_and_saved_port(self):
+        with patch.object(cli, 'VM', return_value=self.vm), \
+                patch.object(cli, 'ensure_running', return_value=self.workflow):
+            cli.main(['--profile', 'second', 'desktop', '--tailnet'])
+        self.workflow.vnc.assert_called_once_with(5908, open_viewer=True, tailnet=True)
+
+    def test_desktop_password_is_available_without_starting_the_vm_or_tailscale(self):
+        self.workflow.desktop_password.return_value = 'testpass'
+        with patch.object(cli, 'VM', return_value=self.vm), \
+                patch.object(cli, 'Workflow', return_value=self.workflow), \
+                patch.object(cli, 'ensure_running') as ready, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(cli.main(['desktop', '--show-password']), 0)
+        self.assertEqual(output.getvalue(), 'testpass\n')
+        ready.assert_not_called()
+        self.workflow.vnc.assert_not_called()
+
     def test_stopped_desktop_does_not_start_vm(self):
         self.vm.info.return_value = None
         with patch.object(cli, 'VM', return_value=self.vm), patch.object(cli, 'Workflow') as workflow, \

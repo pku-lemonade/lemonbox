@@ -33,7 +33,7 @@ packages=(ca-certificates curl git sudo openssh-server locales python3 jq procps
           iproute2 iputils-ping bind9-dnsutils tmux libatomic1)
 if [[ "$desktop" == true ]]; then
   packages+=(firefox-esr chromium xfce4 xfce4-terminal dbus-x11 xvfb x11vnc xauth
-             x11-utils fonts-dejavu-core fonts-liberation)
+             x11-utils fonts-dejavu-core fonts-liberation fonts-noto-color-emoji)
 fi
 if [[ "$docker" == true ]]; then
   packages+=(docker.io docker-cli)

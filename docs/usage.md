@@ -6,7 +6,7 @@ Run `lemonbox` for the menu. It remembers your selected VM and offers setup when
 | --- | --- |
 | `lemonbox claude` | Open native Claude in your VM |
 | `lemonbox shell` | Open your normal Linux shell, including repair access |
-| `lemonbox desktop` | Start the desktop and open a localhost VNC connection |
+| `lemonbox desktop` | Start the desktop and open a local or tailnet VNC connection |
 | `lemonbox files` | Add, remove or view shared host folders |
 | `lemonbox settings` | Edit, validate and apply settings |
 | `lemonbox status` | Show this VM and the gateway's reported health, recovery progress and alerts |
@@ -125,13 +125,28 @@ Adding or removing a share applies its settings and restarts the VM. Removal det
 ```bash
 lemonbox desktop
 lemonbox desktop --no-open
+lemonbox desktop --show-password
 lemonbox desktop --port 5902
 lemonbox desktop --stop
 ```
 
 The guide must have installed the optional desktop when creating this VM. Firefox, terminal, file manager and a Claude launcher are available. Use the guest browser for Claude's sign-in flow.
 
+New desktop VMs include Noto Color Emoji. Add it to an existing VM with `lemonbox exec -- sudo apt-get install --yes --no-install-recommends fonts-noto-color-emoji`, then restart applications that were already open.
+
 VNC is bound to host loopback through the pinned guest SSH connection. Keep the terminal open and connect a viewer to the displayed address. TigerVNC uses a double colon for the port: `127.0.0.1::5901`. Ctrl-C reaps the SSH tunnel; it leaves the VM and desktop running.
+
+Each VM has its own generated VNC password. Run `lemonbox desktop --show-password` on the host with the same VM selection, then enter that password in your viewer. This also works with macOS Screen Sharing. The password survives restarts and is stored privately outside VM templates. Showing it does not start the VM or desktop. On the first desktop launch after this update, Lemonbox applies password authentication to an existing VM and restarts its desktop once; later launches preserve a running desktop when its configuration is unchanged.
+
+For a remote host connected to Tailscale, expose the desktop directly to your tailnet:
+
+```bash
+lemonbox --profile second desktop --tailnet --port 5902
+```
+
+Run this on the server. Lemonbox discovers its Tailscale IPv4 address and binds the tunnel to that address. Connect a VNC viewer on your computer to the displayed address, for example `100.80.90.100:5902` (TigerVNC: `100.80.90.100::5902`). On macOS, use Finder's **Go → Connect to Server** with `vnc://100.80.90.100:5902`. Retrieve the password on the server with `lemonbox --profile second desktop --show-password`. It prints the address without opening a viewer on the server. Your computer must be connected to the tailnet, and its access rules must allow the server's TCP port. Anyone with that network access and the VNC password can use the shared desktop; Lemonbox SSH user grants do not restrict VNC access.
+
+Keep the command running while using the desktop. Ctrl-C, terminal hangup or command termination closes its listener and connections. Each VM needs a different host port. This option requires the host's Tailscale network interface and IPv4 address; userspace networking is unsupported. Tailscale stays on the host, and no Serve configuration is created. Without `--tailnet`, the listener uses host loopback.
 
 ## Lifecycle
 

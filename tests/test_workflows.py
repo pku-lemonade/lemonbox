@@ -1,19 +1,66 @@
-"""Verify native readiness, argument transport, and localhost desktop access."""
+"""Verify native readiness, argument transport, and desktop tunnel access."""
 import contextlib
 import io
 import json
 from pathlib import Path
 import runpy
 import shlex
+import signal
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from vm.workflows import Workflow
+from vm.workflows import Workflow, tailnet_address
 
 
 READINESS_SCRIPT = Path(__file__).resolve().parent.parent / "guest/readiness.py"
+
+
+class TailnetAddressTests(unittest.TestCase):
+    @staticmethod
+    def status(**changes):
+        value = {"BackendState": "Running", "TUN": True,
+                 "TailscaleIPs": ["fd7a:115c:a1e0::1234", "100.80.90.100"]}
+        value.update(changes)
+        return subprocess.CompletedProcess([], 0, json.dumps(value), "")
+
+    def test_uses_the_running_hosts_tailscale_ipv4(self):
+        with patch("vm.workflows.subprocess.run", return_value=self.status()) as run:
+            self.assertEqual(tailnet_address(), "100.80.90.100")
+        self.assertEqual(run.call_args.args[0], ["tailscale", "status", "--json"])
+        self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
+    def test_stopped_or_userspace_tailscale_cannot_expose_a_desktop(self):
+        for status, message in ((self.status(BackendState="Stopped"), "Connect this host"),
+                                (self.status(TUN=False), "network interface")):
+            with self.subTest(message=message), \
+                    patch("vm.workflows.subprocess.run", return_value=status), \
+                    self.assertRaisesRegex(RuntimeError, message):
+                tailnet_address()
+
+    def test_no_fallback_to_wildcard_lan_public_or_loopback_addresses(self):
+        for addresses in ([], None, "100.80.90.100", ["0.0.0.0"], ["192.168.1.2"],
+                          ["203.0.113.1"], ["127.0.0.1"], ["::1"], ["bad"]):
+            with self.subTest(addresses=addresses), \
+                    patch("vm.workflows.subprocess.run", return_value=self.status(TailscaleIPs=addresses)), \
+                    self.assertRaisesRegex(RuntimeError, "no usable IPv4"):
+                tailnet_address()
+
+    def test_missing_unresponsive_or_invalid_tailscale_has_actionable_errors(self):
+        for error, message in ((FileNotFoundError(), "Install Tailscale"),
+                               (subprocess.TimeoutExpired("tailscale", 10), "timed out")):
+            with self.subTest(message=message), \
+                    patch("vm.workflows.subprocess.run", side_effect=error), \
+                    self.assertRaisesRegex(RuntimeError, message):
+                tailnet_address()
+        for result in (subprocess.CompletedProcess([], 1, "", "daemon unavailable"),
+                       subprocess.CompletedProcess([], 0, "invalid JSON", ""),
+                       subprocess.CompletedProcess([], 0, "[]", "")):
+            with self.subTest(result=result), \
+                    patch("vm.workflows.subprocess.run", return_value=result), \
+                    self.assertRaises(RuntimeError):
+                tailnet_address()
 
 
 class WorkflowTests(unittest.TestCase):
@@ -30,6 +77,9 @@ class WorkflowTests(unittest.TestCase):
         (self.vm.state / "guest.json").write_text(json.dumps({"profile": {
             "username": "debian", "desktop": True, "docker": True}}))
         self.workflow = Workflow(self.vm)
+        configuration = patch('vm.workflows.Desktop.configure', return_value=False)
+        self.configure_desktop = configuration.start()
+        self.addCleanup(configuration.stop)
 
     @staticmethod
     def complete(**changes):
@@ -276,20 +326,65 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(remote.call_args.args[0],
                          ["sudo", "-n", "systemctl", "start", "lemon-desktop.service"])
         wait.assert_called_once()
-        forward.assert_called_once_with(tunnel, 5907)
+        forward.assert_called_once_with(tunnel, 5907, host="127.0.0.1")
         command = popen.call_args.args[0]
         self.assertIn("127.0.0.1:5907:127.0.0.1:5900", command)
         self.assertIn("ExitOnForwardFailure=yes", command)
         self.assertIn("Ctrl-C", output.getvalue())
         viewer.assert_not_called()
 
+    def test_changed_authentication_restarts_the_desktop_before_opening_a_tunnel(self):
+        self.configure_desktop.return_value = True
+        tunnel = Mock()
+        tunnel.wait.return_value = 0
+        tunnel.poll.return_value = 0
+        with patch.object(self.workflow, 'remote', return_value=subprocess.CompletedProcess([], 0)) as remote, \
+                patch.object(self.workflow, '_wait_desktop'), patch.object(self.workflow, '_wait_tunnel'), \
+                patch('vm.workflows.subprocess.Popen', return_value=tunnel), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.workflow.vnc()
+        self.assertEqual(remote.call_args.args[0],
+                         ['sudo', '-n', 'systemctl', 'restart', 'lemon-desktop.service'])
+
+    def test_tailnet_vnc_binds_and_probes_only_the_discovered_address(self):
+        tunnel = Mock()
+        tunnel.wait.return_value = 0
+        tunnel.poll.return_value = 0
+        with patch.object(self.workflow, "remote", return_value=subprocess.CompletedProcess([], 0)), \
+                patch("vm.workflows.tailnet_address", return_value="100.80.90.100"), \
+                patch.object(self.workflow, "_wait_desktop"), \
+                patch.object(self.workflow, "_wait_tunnel") as forward, \
+                patch("vm.workflows.subprocess.Popen", return_value=tunnel) as popen, \
+                patch.object(self.workflow, "_viewer") as viewer, \
+                contextlib.redirect_stderr(io.StringIO()) as output:
+            self.assertEqual(self.workflow.vnc(port=5902, tailnet=True, open_viewer=True), 0)
+        command = popen.call_args.args[0]
+        self.assertIn("100.80.90.100:5902:127.0.0.1:5900", command)
+        self.assertNotIn("-g", command)
+        forward.assert_called_once_with(tunnel, 5902, host="100.80.90.100")
+        self.assertIn("VNC: 100.80.90.100:5902", output.getvalue())
+        self.assertIn("100.80.90.100::5902", output.getvalue())
+        viewer.assert_not_called()
+
+    def test_tailnet_discovery_failure_does_not_start_a_desktop_or_tunnel(self):
+        with patch("vm.workflows.tailnet_address", side_effect=RuntimeError("Tailscale is stopped")), \
+                patch.object(self.workflow, "remote") as remote, \
+                patch("vm.workflows.subprocess.Popen") as popen, \
+                self.assertRaisesRegex(RuntimeError, "Tailscale is stopped"):
+            self.workflow.vnc(tailnet=True)
+        remote.assert_not_called()
+        popen.assert_not_called()
+
     def test_vnc_stop_never_opens_a_tunnel(self):
         with patch.object(self.workflow, "remote", return_value=subprocess.CompletedProcess([], 0)) as remote, \
                 patch("vm.workflows.subprocess.Popen") as popen, \
+                patch("vm.workflows.tailnet_address") as discover, \
                 contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(self.workflow.vnc(stop=True), 0)
+            self.assertEqual(self.workflow.vnc(stop=True, tailnet=True), 0)
         self.assertEqual(remote.call_args.args[0][3], "stop")
         popen.assert_not_called()
+        discover.assert_not_called()
+        self.configure_desktop.assert_not_called()
 
     def test_vnc_viewer_is_opened_only_after_tunnel_is_ready(self):
         tunnel = Mock()
@@ -304,7 +399,7 @@ class WorkflowTests(unittest.TestCase):
 
         with patch.object(self.workflow, "remote", return_value=subprocess.CompletedProcess([], 0)), \
                 patch.object(self.workflow, "_wait_desktop"), \
-                patch.object(self.workflow, "_wait_tunnel", side_effect=lambda *_: events.append("ready")), \
+                patch.object(self.workflow, "_wait_tunnel", side_effect=lambda *_, **kwargs: events.append("ready")), \
                 patch.object(self.workflow, "_viewer", return_value=viewer), \
                 patch("vm.workflows.subprocess.Popen", side_effect=launch), \
                 contextlib.redirect_stderr(io.StringIO()):
@@ -347,6 +442,31 @@ class WorkflowTests(unittest.TestCase):
             self.workflow.vnc()
         tunnel.terminate.assert_called_once()
         tunnel.wait.assert_called_once_with(timeout=5)
+
+    def test_terminal_hangup_and_termination_close_the_tailnet_tunnel(self):
+        for signum in (signal.SIGHUP, signal.SIGTERM):
+            previous = signal.getsignal(signum)
+            tunnel = Mock()
+            tunnel.poll.return_value = None
+
+            def wait(timeout=None):
+                if timeout is None:
+                    signal.raise_signal(signum)
+                return 0
+
+            tunnel.wait.side_effect = wait
+            with self.subTest(signal=signum), \
+                    patch.object(self.workflow, "remote", return_value=subprocess.CompletedProcess([], 0)), \
+                    patch("vm.workflows.tailnet_address", return_value="100.80.90.100"), \
+                    patch.object(self.workflow, "_wait_desktop"), \
+                    patch.object(self.workflow, "_wait_tunnel"), \
+                    patch("vm.workflows.subprocess.Popen", return_value=tunnel), \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as result:
+                self.workflow.vnc(tailnet=True)
+            self.assertEqual(result.exception.code, 128 + signum)
+            tunnel.terminate.assert_called_once()
+            tunnel.wait.assert_called_with(timeout=5)
+            self.assertEqual(signal.getsignal(signum), previous)
 
 
 if __name__ == "__main__":
